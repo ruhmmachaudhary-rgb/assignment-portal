@@ -1,10 +1,15 @@
-name: CI Pipeline
+name: CI Pipeline with Bonuses
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
   build-and-test:
@@ -36,37 +41,87 @@ jobs:
       run: |
         python -c "
         import requests, os
-        
         repo = os.getenv('GITHUB_REPOSITORY', 'unknown')
         branch = os.getenv('GITHUB_REF_NAME', 'main')
         sha = os.getenv('GITHUB_SHA', 'unknown')
         run_id = os.getenv('GITHUB_RUN_ID', 'unknown')
-        
         failed = os.getenv('test_failed') == 'true'
         status = 'FAILURE' if failed else 'SUCCESS'
-        
         payload = {
-            'repository': repo,
-            'branch': branch,
-            'commit_sha': sha,
-            'pipeline_run_id': run_id,
-            'overall_status': status,
-            'passed_count': 2 if failed else 3,
-            'failed_count': 1 if failed else 0,
-            'tests': [
-                {'name': 'test_complete_and_valid_submission', 'result': 'PASSED'},
-                {'name': 'test_missing_registration_number', 'result': 'PASSED'},
-                {'name': 'test_invalid_submission_url', 'result': 'FAILED' if failed else 'PASSED', 'message': 'Invalid URL error not caught' if failed else ''}
-            ]
+            'repository': repo, 'branch': branch, 'commit_sha': sha,
+            'pipeline_run_id': run_id, 'overall_status': status,
+            'passed_count': 2 if failed else 3, 'failed_count': 1 if failed else 0
         }
-        
         receiver = os.getenv('RECEIVER_URL')
         if receiver:
             try:
-                res = requests.post(receiver + '/receive-report', json=payload, timeout=10)
-                print('Report sent successfully:', res.status_code)
+                requests.post(receiver + '/receive-report', json=payload, timeout=10)
             except Exception as e:
-                print('Failed to send report:', e)
-        else:
-            print('RECEIVER_URL secret not set.')
+                print('Error:', e)
         "
+
+    - name: Send Email Notification
+      if: always()
+      env:
+        EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        MAIL_TO: ${{ secrets.MAIL_TO }}
+        COMMIT_SHA: ${{ github.sha }}
+        RUN_ID: ${{ github.run_id }}
+        TEST_FAILED: ${{ env.test_failed }}
+      run: |
+        python -c "
+        import smtplib, os
+        from email.message import EmailMessage
+
+        user = os.getenv('EMAIL_USERNAME')
+        password = os.getenv('EMAIL_PASSWORD')
+        to_email = os.getenv('MAIL_TO')
+
+        if user and password and to_email:
+            msg = EmailMessage()
+            failed = os.getenv('TEST_FAILED') == 'true'
+            status = 'FAILURE' if failed else 'SUCCESS'
+            msg['Subject'] = f'CI Pipeline Report - Status: {status}'
+            msg['From'] = user
+            msg['To'] = to_email
+            
+            content = f'''
+            Pipeline Execution Report:
+            - Commit SHA: {os.getenv('COMMIT_SHA')}
+            - GitHub Run ID: {os.getenv('RUN_ID')}
+            - Overall Status: {status}
+            '''
+            msg.set_content(content)
+
+            try:
+                with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+                    smtp.login(user, password)
+                    smtp.send_message(msg)
+                print('Email sent successfully!')
+            except Exception as e:
+                print('Failed to send email:', e)
+        else:
+            print('Email credentials not configured.')
+        "
+
+    - name: Upload Pages Artifact
+      if: success()
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: '.'
+
+  deploy-pages:
+    needs: build-and-test
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
