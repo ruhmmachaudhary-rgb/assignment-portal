@@ -27,7 +27,8 @@ def test_missing_registration_number(client):
         'title': 'DevOps Lab 1',
         'url': 'https://github.com/ali/repo'
     })
-    assert response.status_code == 400
+    # Defect introduced here: expected status code 200 instead of 400 to cause test failure
+    assert response.status_code == 200  
     assert b"Registration number is missing!" in response.data
     assert len(submissions) == 0
 
